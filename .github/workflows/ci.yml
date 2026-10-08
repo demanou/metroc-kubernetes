@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate manifests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install kubeconform
+        run: |
+          curl -sSL https://github.com/yannh/kubeconform/releases/latest/download/kubeconform-linux-amd64.tar.gz \
+            | tar xz -C /usr/local/bin kubeconform
+
+      - name: Build with Kustomize and validate against Kubernetes schemas
+        run: kubectl kustomize k8s | kubeconform -strict -summary -
+
+  smoke-test:
+    name: Deploy to a test cluster (kind)
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create kind cluster
+        uses: helm/kind-action@v1
+
+      - name: Deploy
+        run: kubectl apply -k k8s
+
+      - name: Wait for the rollouts
+        run: |
+          kubectl -n metroc rollout status deployment/nginx --timeout=180s
+          kubectl -n metroc rollout status deployment/helloapp --timeout=180s
+
+      - name: Test both apps from inside the cluster
+        run: |
+          kubectl -n metroc port-forward svc/nginx 8081:80 >/dev/null 2>&1 &
+          kubectl -n metroc port-forward svc/helloapp 8082:80 >/dev/null 2>&1 &
+          sleep 5
+          curl -sf http://localhost:8081 | grep -i "welcome to nginx"
+          curl -sf http://localhost:8082 | grep -i "hello, world"
+
+      - name: Show resources
+        if: always()
+        run: kubectl -n metroc get all -o wide
